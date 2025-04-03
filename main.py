@@ -1,6 +1,6 @@
 
 import discord
-from discord import ui
+from discord import ui, app_commands
 from discord.ext import commands
 from twelvedata import TDClient
 import matplotlib.pyplot as plt
@@ -178,13 +178,27 @@ class BuyStockButton(ui.View):
             print (e)
             await interaction.followup.send("Error processing your purchase.", ephemeral=True)
 
+TEST_GUILD = discord.Object(id=1349068689521115197)  
+
 @bot.event
 async def on_ready():
     print(f'Logged in as {bot.user}')
     await bot.change_presence(activity=discord.Streaming(name="TS PMO", url="https://www.twitch.tv/morememes_"))
+    
+    try:
+        synced = await bot.tree.sync(guild=TEST_GUILD)
+        print(f"Synced {len(synced)} command(s) to test guild")
+    except Exception as e:
+        print(e)
+    
+    try:
+        synced_global = await bot.tree.sync()
+        print(f"Synced {len(synced_global)} global command(s)")
+    except Exception as e:
+        print(e)
 
-@bot.command()
-async def help(ctx):
+@bot.tree.command(name="help", description="Get help with the bot commands", guild=TEST_GUILD)
+async def help(interaction: discord.Interaction):
     """
     General help command
     """
@@ -212,12 +226,12 @@ async def help(ctx):
     embed.add_field(
         name="📊 **Stock Command:**",
         value=(
-            "`^stock <symbol> [interval] [outputsize]`\n"
+            "`/stock symbol: <ticker> [interval] [outputsize]`\n"
             "➤ Use this command to check a stock's performance.\n"
             "➤ Click the **Buy Stock** button to purchase shares.\n"
             "**Examples:**\n"
-            "`^stock TSLA` - Tesla stock (1-day interval)\n"
-            "`^stock AAPL 1week 100` - Apple, weekly, 100 entries"
+            "`/stock symbol: TSLA` - Tesla stock (1-day interval)\n"
+            "`/stock symbol: AAPL interval: 1week outputsize: 100` - Apple, weekly, 100 entries"
         ),
         inline=False
     )
@@ -225,11 +239,11 @@ async def help(ctx):
     embed.add_field(
         name="👤 **User Command:**",
         value=(
-            "`^user [@mention]`\n"
+            "`/user [user]`\n"
             "➤ Check your own or another user's portfolio.\n"
             "**Examples:**\n"
-            "`^user` - View your portfolio\n"
-            "`^user @username` - View someone else's portfolio"
+            "`/user` - View your portfolio\n"
+            "`/user @username` - View someone else's portfolio"
         ),
         inline=False
     )
@@ -237,37 +251,33 @@ async def help(ctx):
     embed.add_field(
         name="📉 **Sell Command:**",
         value=(
-            "`^sell <symbol> <shares>`\n"
+            "`/sell symbol: <ticker> shares: <number>`\n"
             "➤ Use this command to sell shares from your portfolio.\n"
             "**Examples:**\n"
-            "`^sell TSLA 5` - Sell 5 Tesla shares\n"
-            "`^sell AAPL 2` - Sell 2 Apple shares"
+            "`/sell symbol: TSLA shares: 5` - Sell 5 Tesla shares\n"
+            "`/sell symbol: AAPL shares: 2` - Sell 2 Apple shares"
         ),
         inline=False
     )
 
     embed.set_footer(text="Happy trading! 📈")
+    await interaction.response.send_message(embed=embed)
 
-    await ctx.send(embed=embed)
-
-@bot.command()
-async def user(ctx, user: discord.Member = None):
+# User command
+@bot.tree.command(name="user", description="View your or another user's portfolio", guild=TEST_GUILD)
+@app_commands.describe(user="The user to view (leave blank for yourself)")
+async def user(interaction: discord.Interaction, user: discord.Member = None):
     """
     Gets the supplied user's info and portfolio.
     If no user is supplied, it grabs the one who sent the command.
     """
-
     if user is None:
-        user = ctx.author
+        user = interaction.user
 
     user_data = fetch_data(user)
-
     current_balance = user_data['money']
-
-
-    total_shares = sum(user_data['portfolio'][stock]['shares'] for stock in user_data['portfolio'] if stock != "shares")
+    total_shares = user_data['portfolio']['shares']
     total_worth = 0
-
 
     for stock in user_data['portfolio']:
         if stock == "shares":
@@ -280,7 +290,6 @@ async def user(ctx, user: discord.Member = None):
             total_worth += user_data['portfolio'][stock]['shares'] * current_price
         except Exception as e:
             print(f"Error fetching price for {stock}: {e}")
-
 
     embed = discord.Embed(
         title=f"{user.display_name}'s Portfolio",
@@ -295,73 +304,44 @@ async def user(ctx, user: discord.Member = None):
         inline=False
     )
 
-    await ctx.send(embed=embed)
+    await interaction.response.send_message(embed=embed)
 
-    
-
-@bot.command()
-async def stock(ctx, symbol: str = None, interval: str = "1day", outputsize: int = 365):
+# Stock command
+@bot.tree.command(name="stock", description="Get stock information and price history", guild=TEST_GUILD)
+@app_commands.describe(
+    symbol="The stock ticker symbol (e.g., TSLA, AAPL)",
+    interval="The time interval (default: 1day)",
+    outputsize="Number of data points to return (default: 365)"
+)
+@app_commands.choices(interval=[
+    app_commands.Choice(name="1 minute", value="1min"),
+    app_commands.Choice(name="5 minutes", value="5min"),
+    app_commands.Choice(name="15 minutes", value="15min"),
+    app_commands.Choice(name="1 day", value="1day"),
+    app_commands.Choice(name="1 week", value="1week"),
+    app_commands.Choice(name="1 month", value="1month")
+])
+async def stock(interaction: discord.Interaction, symbol: str, interval: str = "1day", outputsize: int = 365):
     '''
     This command returns the supplied stock's history, current price, 1 month, and ytd
     Includes a button to buy the stock.
     '''
-
-    if symbol is None:
-        embed = discord.Embed(
-            title="📊 Stock Command Usage",
-            description="Fetch historical stock information with customizable intervals.",
-            color=discord.Color.blue()
-        )
-
-        embed.add_field(
-            name="🛠️ **Usage:**",
-            value="`^stock <symbol> [interval] [outputsize]`",
-            inline=False
-        )
-
-        embed.add_field(
-            name="📘 **Examples:**",
-            value=(
-                "`^stock TSLA` - Tesla stock (1-day interval)\n"
-                "`^stock AAPL 1week 100` - Apple, weekly, 100 entries"
-            ),
-            inline=False
-        )
-
-        embed.add_field(
-            name="⏳ **Supported Intervals:**",
-            value="`1min`, `5min`, `15min`, `1day`, `1week`, `1month`",
-            inline=False
-        )
-
-        embed.set_footer(text="Replace <symbol> with the stock ticker (e.g., TSLA, AAPL).")
-        
-        await ctx.send(embed=embed)
-        return
-
-
+    await interaction.response.defer()
+    
     try:
         ts = td.time_series(symbol=symbol, interval=interval, outputsize=outputsize)
         data = ts.as_pandas()
 
         if data.empty:
-            await ctx.send("No data found for that symbol.")
+            await interaction.followup.send("No data found for that symbol.")
             return
 
-
         data.sort_index(inplace=True)
-
-
         current_price = data["close"].iloc[-1]
-
-
         month_ago_price = data["close"].iloc[-30] if len(data) >= 30 else data["close"].iloc[0]
         month_change = ((current_price - month_ago_price) / month_ago_price) * 100
-
-
         ytd_price = data["close"].iloc[0]
         ytd_change = ((current_price - ytd_price) / ytd_price) * 100
-
 
         plt.figure(figsize=(10, 5))
         plt.plot(data.index, data["close"], label=f"{symbol.upper()} Price")
@@ -376,7 +356,6 @@ async def stock(ctx, symbol: str = None, interval: str = "1day", outputsize: int
         buffer.seek(0)
         plt.close()
 
-
         file = discord.File(buffer, filename="stock.png")
 
         embed = discord.Embed(title=f"{symbol.upper()} Stock Metrics", color=discord.Color.green())
@@ -386,89 +365,57 @@ async def stock(ctx, symbol: str = None, interval: str = "1day", outputsize: int
         embed.add_field(name="1 Month Change", value=f"{month_change:.2f}%", inline=False)
         embed.add_field(name="YTD Change", value=f"{ytd_change:.2f}%", inline=False)
 
-
-        view = BuyStockButton(ctx.author, symbol, current_price)
-        await ctx.send(file=file, embed=embed, view=view)
+        view = BuyStockButton(interaction.user, symbol, current_price)
+        await interaction.followup.send(file=file, embed=embed, view=view)
     
     except Exception as e:
-        await ctx.send(f"Error getting requested stock ({symbol}).", ephemeral=True)
+        await interaction.followup.send(f"Error getting requested stock ({symbol}).")
 
-@bot.command()
-async def sell(ctx, symbol: str = None, shares: float = None):
+# Sell command
+@bot.tree.command(name="sell", description="Sell shares of a stock you own", guild=TEST_GUILD)
+@app_commands.describe(
+    symbol="The stock ticker symbol to sell",
+    shares="Number of shares to sell"
+)
+async def sell(interaction: discord.Interaction, symbol: str, shares: float):
     """
     Sell a specified number of shares of a stock.
-    Usage: ^sell <symbol> <shares>
     """
-
-    if (symbol is None or shares is None):
-        embed = discord.Embed(
-            title="📉 Sell Command Usage",
-            description="Use this command to sell shares from your portfolio.",
-            color=discord.Color.blue()
-        )
-
-        embed.add_field(
-            name="🛠️ **Usage:**",
-            value="`^sell <symbol> <shares>`",
-            inline=False
-        )
-
-        embed.add_field(
-            name="📘 **Examples:**",
-            value=(
-                "`^sell TSLA 5` - Sell 5 Tesla shares\n"
-                "`^sell AAPL 2` - Sell 2 Apple shares"
-            ),
-            inline=False
-        )
-
-        embed.set_footer(text="Replace <symbol> with the stock ticker (e.g., TSLA, AAPL).")
-        
-        await ctx.send(embed=embed)
-        return
-
-
-
-    user_data = fetch_data(ctx.author)
-
-
+    await interaction.response.defer()
+    
+    user_data = fetch_data(interaction.user)
     symbol = symbol.lower()
 
-
     if symbol not in user_data["portfolio"]:
-        await ctx.send(f"❌ You don't own any shares of {symbol.upper()}.")
+        await interaction.followup.send(f"❌ You don't own any shares of {symbol.upper()}.")
         return
-
 
     available_shares = user_data["portfolio"][symbol]["shares"]
     if shares <= 0 or shares > available_shares:
-        await ctx.send(f"❌ You only have {available_shares} shares of {symbol.upper()} available.")
+        await interaction.followup.send(f"❌ You only have {available_shares} shares of {symbol.upper()} available.")
         return
 
     try:
-
         ts = td.time_series(symbol=symbol, interval="1day", outputsize=1)
         data = ts.as_pandas()
         current_price = data["close"].iloc[-1]
-
-
         sale_amount = current_price * shares
-
 
         user_data["money"] += sale_amount
         user_data['portfolio']['shares'] -= shares
         user_data["portfolio"][symbol]["shares"] -= shares
 
-
         if user_data["portfolio"][symbol]["shares"] <= 0:
             del user_data["portfolio"][symbol]
 
-        save_data(ctx.author, user_data)
+        save_data(interaction.user, user_data)
 
-        await ctx.send(f"✅ Sold {shares} shares of {symbol.upper()} for ${sale_amount:.2f}. Your new balance is ${user_data['money']:.2f}.")
+        await interaction.followup.send(
+            f"✅ Sold {shares} shares of {symbol.upper()} for ${sale_amount:.2f}. "
+            f"Your new balance is ${user_data['money']:.2f}."
+        )
 
     except Exception as e:
-        await ctx.send(f"❌ Error processing the sale: {e}")
-
+        await interaction.followup.send(f"❌ Error processing the sale: {e}")
 
 bot.run(token)
